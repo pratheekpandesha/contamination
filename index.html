@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gel Lane Analyzer</title>
+<meta name="description" content="Drag-and-drop agarose gel analysis: lane detection, ladder sizing, labels from Excel, band calls and densitometry. Runs entirely in your browser.">
+<link rel="stylesheet" href="css/style.css">
+<script src="https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/utif@3.1.0/UTIF.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand"><span class="logo" aria-hidden="true"></span>Gel Lane Analyzer</div>
+  <div class="privacy">Images never leave your computer — all analysis runs in this browser tab.</div>
+</header>
+
+<div class="layout">
+  <aside class="sidebar">
+    <section class="card">
+      <h2><span class="step">1</span>Gel image</h2>
+      <label class="drop" id="drop">
+        <input type="file" id="fileInput" accept=".tif,.tiff,.png,.jpg,.jpeg,image/*" hidden>
+        <strong>Drop a gel image</strong><span>or click to choose · TIFF (8/16-bit), PNG, JPG</span>
+      </label>
+      <div id="imgInfo" class="muted small"></div>
+      <div class="field">
+        <label for="polarity">Bands are</label>
+        <select id="polarity">
+          <option value="auto">Auto-detect</option>
+          <option value="dark">Dark on light</option>
+          <option value="bright">Bright on dark</option>
+        </select>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2><span class="step">2</span>Ladder</h2>
+      <div class="field">
+        <label for="ladderSel">Default ladder</label>
+        <select id="ladderSel"></select>
+      </div>
+      <div id="ladderPreview" class="ladder-preview"></div>
+      <button class="btn ghost" id="manageLadders">Manage ladder database…</button>
+      <div class="field">
+        <label for="ladderPos">Ladder lanes</label>
+        <select id="ladderPos">
+          <option value="auto">From labels, else first lane</option>
+          <option value="first">First lane of each row</option>
+          <option value="last">Last lane of each row</option>
+          <option value="both">First and last lane</option>
+          <option value="none">None</option>
+        </select>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2><span class="step">3</span>Rows &amp; lanes</h2>
+      <div class="grid2">
+        <div class="field"><label for="gelSize">Gel size</label>
+          <select id="gelSize">
+            <option value="">Any</option>
+            <option value="small">Small</option>
+            <option value="medium">Medium</option>
+            <option value="large">Large</option>
+          </select>
+        </div>
+        <div class="field"><label for="comb">Comb (teeth)</label>
+          <select id="comb">
+            <option value="">Auto</option>
+            <option>6</option><option>8</option><option>10</option><option>12</option><option>15</option>
+            <option>16</option><option>18</option><option>20</option><option>24</option><option>25</option>
+            <option>26</option><option>30</option><option>32</option><option>50</option>
+          </select>
+        </div>
+        <div class="field"><label for="nRows">Rows (combs)</label><input id="nRows" type="number" min="1" max="12" placeholder="auto"></div>
+        <div class="field"><label for="nLanes">Lanes per row</label><input id="nLanes" type="number" min="1" max="100" placeholder="auto"></div>
+      </div>
+      <p class="hint small">Comb sets lanes per row. Gel size remembers your usual number of rows.</p>
+      <div class="row-btns">
+        <button class="btn" id="redetect">Re-detect layout</button>
+        <label class="toggle"><input type="checkbox" id="editMode"> Edit layout</label>
+      </div>
+      <p class="hint small" id="editHint" hidden>
+        Drag a <b>lane handle</b> (◆) sideways · drag a <b>well line</b> up/down, or its end dots to tilt ·
+        <b>double-click</b> on a well line to add a lane, elsewhere to add a row ·
+        <b>Shift-click</b> a handle/line to delete it.
+      </p>
+    </section>
+
+    <section class="card">
+      <h2><span class="step">4</span>Sample labels</h2>
+      <label class="drop small-drop" id="sheetDrop">
+        <input type="file" id="sheetInput" accept=".xlsx,.xls,.csv,.tsv,.txt" hidden>
+        <strong>Upload Excel / CSV</strong><span>labels in lane order, incl. ladder lanes</span>
+      </label>
+      <div class="field">
+        <label for="sheetLayout">Sheet layout</label>
+        <select id="sheetLayout">
+          <option value="auto">Auto</option>
+          <option value="list">List: col A = label, col B = expected bp (optional)</option>
+          <option value="grid">Grid: one sheet row per gel row</option>
+        </select>
+      </div>
+      <details>
+        <summary class="small">…or paste labels</summary>
+        <textarea id="pasteLabels" rows="5" placeholder="One label per line (tab-separated expected size optional)&#10;Ladder&#10;Col-0&#10;ddm1 #1&#10;…"></textarea>
+        <button class="btn ghost" id="applyPaste">Apply pasted labels</button>
+      </details>
+      <div id="labelInfo" class="muted small"></div>
+      <a class="small" href="sample-labels.csv" download>Download an example sheet</a>
+    </section>
+
+    <section class="card">
+      <h2><span class="step">5</span>Expected band</h2>
+      <div class="grid2">
+        <div class="field"><label for="expected">Expected size (bp)</label><input id="expected" type="number" min="1" placeholder="e.g. 520"></div>
+        <div class="field"><label for="tol">Tolerance ±%</label><input id="tol" type="number" min="1" max="50" value="10"></div>
+      </div>
+      <p class="hint small">Per-row and per-lane expected sizes can be set in the tables below (or column B of the sheet).</p>
+      <details>
+        <summary class="small">Detection settings</summary>
+        <div class="grid2">
+          <div class="field"><label for="minSNR">Present if S/N ≥</label><input id="minSNR" type="number" min="1" step="0.5" value="6"></div>
+          <div class="field"><label for="minRel">…and ≥ % of row max</label><input id="minRel" type="number" min="0" max="100" value="5"></div>
+          <div class="field"><label for="faintSNR">Faint if S/N ≥</label><input id="faintSNR" type="number" min="1" step="0.5" value="3"></div>
+          <div class="field"><label for="laneWidth">Lane width % of pitch</label><input id="laneWidth" type="number" min="20" max="100" value="60"></div>
+          <div class="field"><label for="bgWin">Background window ×pitch</label><input id="bgWin" type="number" min="0.3" max="5" step="0.1" value="1"></div>
+        </div>
+      </details>
+    </section>
+  </aside>
+
+  <main class="main">
+    <div class="toolbar">
+      <div class="tb-group">
+        <button class="btn icon" id="zoomOut" title="Zoom out">−</button>
+        <button class="btn icon" id="zoomFit" title="Fit width">Fit</button>
+        <button class="btn icon" id="zoomIn" title="Zoom in">+</button>
+      </div>
+      <div class="tb-group">
+        <label class="toggle"><input type="checkbox" id="showLabels" checked> Labels</label>
+        <label class="toggle"><input type="checkbox" id="showLadder" checked> Ladder sizes</label>
+        <label class="toggle"><input type="checkbox" id="showBoxes" checked> Band calls</label>
+        <label class="toggle"><input type="checkbox" id="showLanes"> Lane strips</label>
+        <label class="toggle"><input type="checkbox" id="invertDisp"> Invert</label>
+      </div>
+      <div class="tb-group right">
+        <button class="btn" id="exportPng" disabled>PNG</button>
+        <button class="btn" id="exportCsv" disabled>CSV</button>
+        <button class="btn primary" id="exportXlsx" disabled>Excel</button>
+      </div>
+    </div>
+
+    <div class="viewer" id="viewer">
+      <div class="empty" id="emptyState">
+        <div class="empty-inner">
+          <div class="empty-title">Drop a gel image anywhere on this page</div>
+          <ol>
+            <li>Pick the ladder (or add your own to the database)</li>
+            <li>Rows and lanes are found automatically from the wells — fix them with <i>Edit layout</i> if needed</li>
+            <li>Upload your Excel sheet of sample names (in lane order, including the ladder)</li>
+            <li>Enter the expected band size → each lane is called present / faint / absent</li>
+            <li>Click any band to see its size, intensity and lane profile</li>
+          </ol>
+          <p class="muted small">Use the raw TIFF export from your imager for quantification. JPEGs are fine for sizing and band calls.</p>
+        </div>
+      </div>
+      <canvas id="canvas" hidden></canvas>
+    </div>
+
+    <div class="panels">
+      <section class="card" id="selPanel">
+        <h3>Selected band</h3>
+        <div id="selInfo" class="muted">Click a band (or any spot in a lane) on the gel.</div>
+        <canvas id="profile" height="180"></canvas>
+      </section>
+      <section class="card" id="rowsPanel">
+        <h3>Rows &amp; ladder fit</h3>
+        <div id="rowsInfo" class="muted">—</div>
+      </section>
+    </div>
+
+    <section class="card results">
+      <div class="results-head">
+        <h3>Results</h3>
+        <span id="summary" class="muted small"></span>
+      </div>
+      <div class="table-wrap"><table id="results"></table></div>
+    </section>
+  </main>
+</div>
+
+<dialog id="ladderDlg">
+  <form method="dialog" class="dlg">
+    <div class="dlg-head">
+      <h3>Ladder database</h3>
+      <button class="btn icon" value="close" aria-label="Close">✕</button>
+    </div>
+    <div class="dlg-body">
+      <div class="dlg-list">
+        <ul id="ladderList"></ul>
+        <div class="row-btns">
+          <button type="button" class="btn" id="ldNew">New</button>
+          <button type="button" class="btn" id="ldDup">Duplicate</button>
+        </div>
+      </div>
+      <div class="dlg-edit">
+        <div class="field"><label for="ldName">Name</label><input id="ldName"></div>
+        <div class="field"><label for="ldCat">Catalog # / note</label><input id="ldCat"></div>
+        <div class="field"><label for="ldSizes">Band sizes (bp), any order — commas, spaces or new lines</label><textarea id="ldSizes" rows="5"></textarea></div>
+        <div class="field"><label for="ldBright">Brighter reference bands (bp, optional)</label><input id="ldBright"></div>
+        <div id="ldPreview" class="ladder-preview big"></div>
+        <div class="row-btns">
+          <button type="button" class="btn primary" id="ldSave">Save ladder</button>
+          <button type="button" class="btn danger" id="ldDel">Delete</button>
+        </div>
+        <p class="hint small" id="ldSrc"></p>
+      </div>
+    </div>
+    <div class="dlg-foot">
+      <span class="muted small">Edits are saved in this browser. To share with the lab: Export → commit as <code>lab-ladders.json</code>.</span>
+      <div class="row-btns">
+        <button type="button" class="btn" id="ldImport">Import JSON</button>
+        <button type="button" class="btn" id="ldExport">Export JSON</button>
+        <button type="button" class="btn ghost" id="ldReset">Reset to defaults</button>
+      </div>
+      <input type="file" id="ldImportFile" accept=".json" hidden>
+    </div>
+  </form>
+</dialog>
+
+<div id="toast" class="toast" hidden></div>
+<script src="js/ladders.js"></script>
+<script src="js/gelcore.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>

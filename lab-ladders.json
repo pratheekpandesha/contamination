@@ -1,0 +1,4 @@
+{
+  "_readme": "Lab-wide ladders. Anything listed here is preloaded for everyone who opens the page. Same id as a built-in = replaces it. Easiest way to fill this: open the app > Manage ladders > Export JSON, then paste the 'ladders' array here.",
+  "ladders": []
+}

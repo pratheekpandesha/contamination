@@ -1,0 +1,7 @@
+Label,Expected bp
+Ladder,
+Col-0 #1,520
+Col-0 #2,520
+mutant #1,520
+mutant #2,520
+NTC,520
