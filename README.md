@@ -6,7 +6,7 @@ A drag-and-drop web page for agarose gel images. It runs entirely in the browser
 - **Automatic rows and lanes**: rows are found from the wells of each comb, and lanes from the comb pitch. The gel size and comb (tooth count) presets help, and gel tilt is corrected.
 - **Labels from Excel or CSV**: sample names are applied in lane order, including ladder lanes. Ladder lanes are recognised by name ("Ladder", "Marker", "L", "M").
 - **Ladder sizing**: ladder bands are matched to the chosen ladder automatically. Bright reference bands are used, and all ladders on a gel are fitted consistently. Band sizes come from interpolating log(bp) against migration distance.
-- **Present / faint / absent calls** at an expected band size (±tolerance), set globally, per row or per lane.
+- **Present / faint / absent calls** at one or more expected band sizes (e.g. `550, 320`), each band called separately (±tolerance). Sizes can be set globally, per row, per lane, or in column B of the label sheet (`550; 320`). The Excel export has a *Band calls* sheet with one line per expected band.
 - **Densitometry**: click any band to get its background-subtracted volume, its intensity relative to the row maximum or a chosen reference lane, its signal-to-noise, a **saturation warning** and the lane profile.
 - **Exports**: annotated PNG, CSV, and Excel (results, ladder fit and settings sheets).
 
@@ -20,6 +20,8 @@ Open the GitHub Pages URL, then drag a gel image onto the page. TIFF (8/16-bit),
   - Double-click to add a lane or row.
   - Shift-click to delete one.
 - If a ladder is mis-assigned, fix individual bands in **Rows & ladder fit**.
+- **Label style** (toolbar) sets the text size, the colours of lane labels, ladder sizes and band sizes, and can write the size under every called band.
+- **Manual edits:** double-click a lane label, a band or a row-end size on the gel to change it, or use the Label and Band size fields under *Selected band* and the *Size label* field per row. Manually entered sizes are marked ✎ and exported with `Size_manual = yes`.
 
 ## Deploy on GitHub Pages (one time, about 2 minutes)
 
@@ -50,11 +52,14 @@ Everyone who opens the page then gets those ladders preloaded. An entry with the
 
 | Step | Method |
 |---|---|
-| Wells / rows | Row-averaged intensity, high-pass filtered. Wells show up as narrow stripes with the opposite polarity to the bands. Tilt comes from the left and right thirds of the gel. |
-| Lanes | Lane pitch from the autocorrelation of column profiles, shared by every row (same comb). The lane extent is a consensus across rows, so empty lanes at the row ends are kept. |
+| Wells / rows | Found from the comb imprints. A well is a slot lighter than the gel both sideways (narrower than a lane) and above/below (short), which rejects band gaps and smears. Rows are evenly spaced comb positions, and the first comb must sit above the first band row. Tilt comes from the imprints in the left and right thirds. |
+| Lanes | Pitch from the column pattern, corrected by the imprint spacing. Lanes run from the first to the last visible imprint, and each lane is centred on its own well. |
+| Ladder lanes | "Auto" uses ladder names in the label sheet, otherwise lanes with clearly more bands than a typical lane, in any position. Images over 12 MP are averaged down, with saturation judged at full resolution. |
 | Lane profile | Mean signal across the central 60% of the lane width (adjustable), followed down the lane from the well, with tilt correction. |
 | Background | Rolling minimum, then maximum, then a moving average (a 1-D "rolling ball"). The window is one lane pitch (adjustable). |
 | Bands | Local maxima above 3× noise. Noise comes from the quiet part of the lane. |
 | Ladder fit | Search over band↔size anchor pairs, refined with a quadratic, then scored on matched bands, missing bands, unexplained bands, fit error and bright-band agreement. Ladders of the same type on one gel are made consistent. Calibration is piecewise-linear log(bp) against distance. Two ladders in a row are interpolated by lane position. |
+| Primer dimers | Discarded from calls and the product size, unless the expected size is below the cutoff (default 100 bp). A band is a dimer if (a) it sizes below the cutoff, or (b) it is the furthest-migrating band recurring across lanes, weaker than a product above it, and level with or below the ladder's lowest band (or small/fuzzy). Rule (b) works even when the ladder fit is wrong. The heavy dimer in no-template lanes is caught too. Dimers are still listed and drawn as grey dashed boxes. |
+| Reference lane | Click a band, then "Use as reference lane". Every lane is then compared only on its band of the same size (± tolerance), and lanes without one show "—". |
 | Volume | Sum of background-subtracted signal across the band × strip width, in arbitrary units. Only compare volumes within one image. |
 | Saturation | Fraction of band pixels at the image's clipping value. Saturated bands under-report volume. |

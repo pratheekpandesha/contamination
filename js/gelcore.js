@@ -120,10 +120,46 @@
     };
   }
   function fromRGBA(rgba, w, h) {
-    const v = new Float32Array(w * h);
-    for (let i = 0, j = 0; i < v.length; i++, j += 4) v[i] = (0.299 * rgba[j] + 0.587 * rgba[j + 1] + 0.114 * rgba[j + 2]) / 255;
-    return finishImage(v, w, h, 8, 255);
+    return fromAccessor(i => 0.299 * rgba[4 * i] + 0.587 * rgba[4 * i + 1] + 0.114 * rgba[4 * i + 2], w, h, 8, 255, false);
   }
+  const MAX_PIXELS = 12e6; // larger images are block-averaged (keeps relative intensities, saves memory)
+
+  /**
+   * Build the analysis image from a pixel accessor. Very large images are averaged in f×f blocks;
+   * saturation is then judged on the full-resolution pixels (satMask = fraction of clipped pixels per block).
+   */
+  function fromAccessor(get, w, h, bitDepth, rawMax, invert) {
+    const n = w * h;
+    let mn = Infinity, mx = -Infinity;
+    for (let i = 0; i < n; i++) { const x = get(i); if (x < mn) mn = x; if (x > mx) mx = x; }
+    const f = Math.max(1, Math.ceil(Math.sqrt(n / MAX_PIXELS)));
+    if (f === 1) {
+      const v = new Float32Array(n);
+      for (let i = 0; i < n; i++) { const x = get(i) / rawMax; v[i] = invert ? 1 - x : x; }
+      return finishImage(v, w, h, bitDepth, rawMax);
+    }
+    const W = Math.floor(w / f), H = Math.floor(h / f), v = new Float32Array(W * H), satMask = new Uint8Array(W * H);
+    let cmn = 0, cmx = 0;
+    for (let i = 0; i < n; i++) { const x = get(i); if (x === mn) cmn++; else if (x === mx) cmx++; }
+    const need = Math.max(20, n * 1e-5), lowSat = cmn >= need, highSat = cmx >= need, ff = f * f;
+    for (let Y = 0; Y < H; Y++) for (let X = 0; X < W; X++) {
+      let sum = 0, sat = 0;
+      for (let dy = 0; dy < f; dy++) {
+        const o = (Y * f + dy) * w + X * f;
+        for (let dx = 0; dx < f; dx++) {
+          const x = get(o + dx); sum += x;
+          if ((lowSat && x === mn) || (highSat && x === mx)) sat++;
+        }
+      }
+      const val = sum / ff / rawMax;
+      v[Y * W + X] = invert ? 1 - val : val;
+      satMask[Y * W + X] = Math.round((255 * sat) / ff);
+    }
+    let vmn = Infinity, vmx = -Infinity;
+    for (let i = 0; i < v.length; i++) { const x = v[i]; if (x < vmn) vmn = x; if (x > vmx) vmx = x; }
+    return { w: W, h: H, v, bitDepth, satLow: -1, satHigh: 2, satMask, min: vmn, max: vmx, binned: f, origW: w, origH: h };
+  }
+
   function fromTIFF(buffer) {
     const UTIF = global.UTIF;
     if (!UTIF) throw new Error('TIFF decoder failed to load (check your internet connection).');
@@ -141,26 +177,20 @@
     const spp = ifd.t277 ? ifd.t277[0] : 1;
     const photo = ifd.t262 ? ifd.t262[0] : 1;
     const fmt = ifd.t339 ? ifd.t339[0] : 1;
-    const d = ifd.data, n = w * h;
-    let v = new Float32Array(n), rawMax = 255, depth = bps;
-    if (spp === 1 && bps === 16) {
-      // UTIF converts 16-bit data to little-endian
-      rawMax = 65535;
-      for (let i = 0; i < n; i++) v[i] = (d[2 * i] | (d[2 * i + 1] << 8)) / 65535;
-    } else if (spp === 1 && bps === 8) {
-      for (let i = 0; i < n; i++) v[i] = d[i] / 255;
-    } else if (spp === 1 && bps === 32 && fmt === 3) {
-      const f = new Float32Array(d.buffer, d.byteOffset, n);
-      let mx = 0; for (let i = 0; i < n; i++) if (f[i] > mx) mx = f[i];
-      for (let i = 0; i < n; i++) v[i] = f[i] / (mx || 1);
-      rawMax = 65535;
-    } else {
-      const rgba = UTIF.toRGBA8(ifd);
-      const im = fromRGBA(rgba, w, h);
-      return im;
+    const d = ifd.data, inv = photo === 0;
+    if (bps === 16 && spp === 1) return fromAccessor(i => d[2 * i] | (d[2 * i + 1] << 8), w, h, 16, 65535, inv); // UTIF gives little-endian
+    if (bps === 8 && spp === 1) return fromAccessor(i => d[i], w, h, 8, 255, inv);
+    if (bps === 8 && (spp === 3 || spp === 4)) // RGB(A) export: use luminance
+      return fromAccessor(i => { const o = i * spp; return 0.299 * d[o] + 0.587 * d[o + 1] + 0.114 * d[o + 2]; }, w, h, 8, 255, false);
+    if (bps === 16 && (spp === 3 || spp === 4))
+      return fromAccessor(i => { const o = 2 * i * spp; return 0.299 * (d[o] | (d[o + 1] << 8)) + 0.587 * (d[o + 2] | (d[o + 3] << 8)) + 0.114 * (d[o + 4] | (d[o + 5] << 8)); }, w, h, 16, 65535, false);
+    if (bps === 32 && fmt === 3 && spp === 1) {
+      const fl = new Float32Array(d.buffer, d.byteOffset, w * h);
+      let mx = 0; for (let i = 0; i < fl.length; i++) if (fl[i] > mx) mx = fl[i];
+      return fromAccessor(i => fl[i], w, h, 32, mx || 1, inv);
     }
-    if (photo === 0) for (let i = 0; i < n; i++) v[i] = 1 - v[i]; // WhiteIsZero
-    return finishImage(v, w, h, depth, rawMax);
+    const rgba = UTIF.toRGBA8(ifd);
+    return fromRGBA(rgba, w, h);
   }
 
   // ---------- polarity ----------
@@ -199,20 +229,170 @@
     return gaussSmooth(sc, Math.max(1, h / 1000));
   }
 
+  /**
+   * Combs on a casting tray are evenly spaced, so choose the evenly spaced set of well candidates that
+   * best explains the profile (rejects bright gaps between rows; recovers weak but on-grid wells).
+   */
+  function pickRowGrid(cand, sc, h, top, nRows, maxFirst) {
+    if (!cand.length) return [];
+    if (maxFirst == null) maxFirst = Infinity;
+    const strong = cand.filter(i => sc[i] >= 0.5 * top);
+    let best = null, bestFit = -Infinity;
+    const evalGrid = (y0, s) => {
+      const tol = Math.max(6, s * 0.06), pts = [];
+      let fit = 0;
+      // walk the grid both ways from y0
+      for (let n = -Math.floor(y0 / s); ; n++) {
+        const g = y0 + n * s;
+        if (g > h * 0.97) break;
+        if (g < h * 0.01) continue;
+        let bi = -1;
+        for (const c of cand) if (Math.abs(c - g) <= tol && (bi < 0 || sc[c] > sc[bi])) bi = c;
+        const roomBelow = h - g;
+        if (bi >= 0) { fit += sc[bi] / top - 0.3; pts.push(bi); } // weak matches do not help a grid
+        else if (roomBelow > s * 0.5) fit -= 0.35; // an empty comb position inside the gel is suspicious
+      }
+      return { fit, pts };
+    };
+    const consider = (y0, s) => {
+      const r = evalGrid(y0, s);
+      if (nRows && r.pts.length !== nRows) return;
+      if (r.pts.length < 1) return;
+      if (r.pts[0] > maxFirst) return; // nothing can be loaded above the first comb
+      // off-grid strong wells argue against this grid
+      const off = strong.filter(c => !r.pts.includes(c)).length;
+      const fit = r.fit - 0.5 * off;
+      if (fit > bestFit + 1e-9) { bestFit = fit; best = r.pts.slice(); }
+    };
+    // single row
+    for (const c of strong) { if (c > maxFirst) continue; const off = strong.length - 1; const fit = sc[c] / top - 0.3 - 0.5 * off; if ((!nRows || nRows === 1) && fit > bestFit) { bestFit = fit; best = [c]; } }
+    for (let i = 0; i < cand.length; i++) for (let j = i + 1; j < cand.length; j++) {
+      for (let k = 1; k <= 6; k++) {
+        const s = (cand[j] - cand[i]) / k;
+        if (s < h / 14) break;
+        consider(cand[i], s);
+      }
+    }
+    if (!best) best = cand.slice().sort((a, b) => sc[b] - sc[a]).slice(0, nRows || 1);
+    // keep only peaks; refine positions handled by caller
+    return Array.from(new Set(best)).sort((a, b) => a - b);
+  }
+
+  /** sliding-window max/min over [i-r, i+r] in O(n) */
+  function slideExt(a, r, isMax, out) {
+    const n = a.length, dq = new Int32Array(n);
+    let hd = 0, tl = 0, j = 0;
+    for (let i = 0; i < n; i++) {
+      const hi = Math.min(n - 1, i + r);
+      while (j <= hi) {
+        while (tl > hd && (isMax ? a[dq[tl - 1]] <= a[j] : a[dq[tl - 1]] >= a[j])) tl--;
+        dq[tl++] = j; j++;
+      }
+      while (dq[hd] < i - r) hd++;
+      out[i] = a[dq[hd]];
+    }
+    return out;
+  }
+
+  /**
+   * Comb-imprint map: a well is lighter than the gel both to its left/right (it is narrower than a lane)
+   * and above/below it (it is a short slot). Gaps between bands satisfy only one of the two.
+   */
+  function wellMap(S, w, h, P) {
+    const r = Math.max(2, Math.round(0.6 * P)), a = Math.max(3, Math.round(0.3 * P));
+    const Wn = new Float32Array(w * h), tmp = new Float32Array(w), clo = new Float32Array(w);
+    for (let y = a; y < h - a; y++) {
+      const row = S.subarray(y * w, (y + 1) * w);
+      slideExt(row, r, true, tmp); slideExt(tmp, r, false, clo); // horizontal closing (fills light features narrower than ~1 lane)
+      const up = (y - a) * w, dn = (y + a) * w, o = y * w;
+      for (let x = 0; x < w; x++) {
+        const s = row[x], lh = clo[x] - s, lv = Math.min(S[up + x], S[dn + x]) - s;
+        const v = lh < lv ? lh : lv;
+        Wn[o + x] = v > 0 ? v : 0;
+      }
+    }
+    return Wn;
+  }
+
+  /** rows from the comb imprints (wells); falls back to the profile method */
   function detectRows(S, w, h, opt) {
+    opt = opt || {};
+    const coarse = detectRowsCoarse(S, w, h, opt);
+    const lens0 = rowLengths(coarse, h);
+    const P0 = lanePitch(coarse.map((r, i) => laneColumns(S, w, h, r, lens0[i])), w);
+    const Wn = wellMap(S, w, h, P0);
+    const x0 = Math.floor(w * 0.04), x1 = Math.ceil(w * 0.96), st = Math.max(1, Math.floor((x1 - x0) / 800));
+    const rp = new Float64Array(h);
+    for (let y = 0; y < h; y++) { let t = 0, c = 0; for (let x = x0; x < x1; x += st) { t += Wn[y * w + x]; c++; } rp[y] = t / c; }
+    const sm = gaussSmooth(rp, Math.max(1, h / 600));
+    const pk = findPeaks(sm, Math.max(8, h / 30), 0).filter(i => i > h * 0.01 && i < h * 0.97);
+    const top = Math.max(0, ...pk.map(i => sm[i]));
+    const cand = pk.filter(i => sm[i] >= 0.1 * top);
+    // first strong band row (nothing can be loaded above the first comb)
+    const bsc = wellScoreProfile(S, w, h, Math.floor(w * 0.06), Math.ceil(w * 0.94));
+    let bandMax = 0;
+    for (let y = Math.floor(h * 0.02); y < h * 0.98; y++) bandMax = Math.max(bandMax, -bsc[y]);
+    let firstBand = Infinity;
+    for (let y = Math.floor(h * 0.02); y < h * 0.98; y++) if (-bsc[y] >= 0.5 * bandMax) { firstBand = y; break; }
+    if (globalThis.__dbgRows) console.log('well-map rows', cand.map(i => i + ':' + (sm[i] / top).toFixed(2)).join(' '), 'firstBand', firstBand, 'P0', P0.toFixed(1));
+    let ys = pickRowGrid(cand, sm, h, top, opt.rows, firstBand - h / 150);
+    if (!ys.length) ys = pickRowGrid(cand, sm, h, top, opt.rows);
+    if (!ys.length) return coarse;
+    // weak rows at the ends of the grid are gel edges, not combs
+    while (ys.length > 1 && sm[ys[ys.length - 1]] < 0.35 * top) ys.pop();
+    while (ys.length > 1 && sm[ys[0]] < 0.35 * top) ys.shift();
+    const fw = ys.map(i => { const half = sm[i] / 2; let a = i, b = i; while (a > 0 && sm[a] > half) a--; while (b < h - 1 && sm[b] > half) b++; return b - a; });
+    const fwhm = clamp(median(fw), 4, h / 20);
+    // tilt from the imprints in the left and right thirds
+    const prof = (xa, xb) => { const p = new Float64Array(h); for (let y = 0; y < h; y++) { let t = 0; for (let x = xa; x < xb; x += st) t += Wn[y * w + x]; p[y] = t; } return gaussSmooth(p, Math.max(1, h / 600)); };
+    const span = x1 - x0, pL = prof(x0, x0 + Math.floor(span * 0.3)), pR = prof(x1 - Math.floor(span * 0.3), x1);
+    const xL = x0 + span * 0.15, xR = x1 - span * 0.15, win = Math.max(5, Math.round(h / 40));
+    const slopes = ys.map(yc => {
+      const loc = arr => { let bi = yc, bv = -Infinity; for (let y = Math.max(0, yc - win); y <= Math.min(h - 1, yc + win); y++) if (arr[y] > bv) { bv = arr[y]; bi = y; } return parabolic(arr, bi); };
+      const sl = (loc(pR) - loc(pL)) / (xR - xL);
+      return isFinite(sl) && Math.abs(sl) < 0.05 ? sl : 0;
+    });
+    const ms = median(slopes);
+    return ys.map(yc => {
+      const r = { yc: parabolic(sm, yc), xc: w / 2, slope: ms, fwhm };
+      Object.defineProperty(r, 'wellMap', { value: Wn, enumerable: false, writable: true });
+      return r;
+    });
+  }
+
+  function detectRowsCoarse(S, w, h, opt) {
     opt = opt || {};
     const x0 = Math.floor(w * 0.06), x1 = Math.ceil(w * 0.94);
     const sc = wellScoreProfile(S, w, h, x0, x1);
     const noise = mad(sc) || 1e-6;
-    let peaks = findPeaks(sc, Math.max(10, h / 14), 0);
+    let peaks = findPeaks(sc, Math.max(8, h / 30), 0);
     peaks = peaks.filter(i => i > h * 0.01 && i < h * 0.97);
-    let rows;
-    if (opt.rows) {
-      rows = peaks.slice().sort((a, b) => sc[b] - sc[a]).slice(0, opt.rows).sort((a, b) => a - b);
-    } else {
-      const top = Math.max(0, ...peaks.map(i => sc[i]));
-      rows = peaks.filter(i => sc[i] >= Math.max(0.22 * top, 5 * noise));
-    }
+    const top = Math.max(0, ...peaks.map(i => sc[i]));
+    let cand = peaks.filter(i => sc[i] >= Math.max(0.08 * top, 3 * noise));
+    // a row of wells has a comb pattern across x (well, gap, well…); bright streaks between rows are smooth
+    const combScore = y => {
+      const r = Math.max(6, Math.round(w / 160)), hw = 4, p = [];
+      for (let x = x0; x < x1; x++) {
+        let s = 0, c = 0;
+        for (let d = -hw; d <= hw; d++) { const yy = y + d; if (yy >= 0 && yy < h) { s += S[yy * w + x]; c++; } }
+        p.push(c ? s / c : 0);
+      }
+      const ma = movingAvg(p, 2 * r + 1);
+      let e = 0; for (let i = 0; i < p.length; i++) e += (p[i] - ma[i]) ** 2;
+      return Math.sqrt(e / p.length);
+    };
+    const cs = new Map(cand.map(i => [i, combScore(i)]));
+    const csMax = Math.max(0, ...cs.values());
+    cand = cand.filter(i => cs.get(i) >= 0.4 * csMax);
+    if (globalThis.__dbgRows) console.log('row candidates', cand.map(i => i + ':' + (sc[i] / top).toFixed(2)).join(' '));
+    // the first strong band row: the first comb must lie above it
+    let bandMax = 0;
+    for (let y = Math.floor(h * 0.02); y < h * 0.98; y++) bandMax = Math.max(bandMax, -sc[y]);
+    let firstBand = Infinity;
+    for (let y = Math.floor(h * 0.02); y < h * 0.98; y++) if (-sc[y] >= 0.5 * bandMax) { firstBand = y; break; }
+    let rows = pickRowGrid(cand, sc, h, top, opt.rows, firstBand - h / 150);
+    if (!rows.length) rows = pickRowGrid(cand, sc, h, top, opt.rows);
+    if (globalThis.__dbgRows) console.log('first band row', firstBand);
     if (!rows.length) rows = [Math.round(h * 0.05)];
 
     // well thickness (FWHM) from the global profile
@@ -340,9 +520,34 @@
     return { centers, chosen, nb };
   }
 
-  function refineLanes(chosen, nb, w, P) {
+  function refineLanes(chosen, nb, w, P, row, h) {
+    const Wn = row && row.wellMap;
+    // centre each lane on its own well imprint (the comb tooth) when the imprint is visible
+    let snapped = null;
+    if (Wn) {
+      const hw = Math.max(2, Math.round(row.fwhm / 2)), R = Math.round(P * 0.45);
+      const prof = chosen.map(c => {
+        const xs = [], vs = [];
+        for (let x = Math.round(c - R); x <= Math.round(c + R); x++) {
+          if (x < 0 || x >= w) continue;
+          const yw = wellY(row, x);
+          let t = 0;
+          for (let d = -hw; d <= hw; d++) { const y = Math.round(yw + d); if (y >= 0 && y < h) t += Wn[y * w + x]; }
+          xs.push(x); vs.push(t);
+        }
+        return { xs, vs, mx: Math.max(0, ...vs) };
+      });
+      const ref = median(prof.map(p => p.mx));
+      snapped = prof.map((p, k) => {
+        if (!(p.mx > 0.3 * ref)) return null;
+        let t = 0, tx = 0;
+        p.vs.forEach((v, i) => { if (v > 0.3 * p.mx) { t += v; tx += v * p.xs[i]; } });
+        return t ? clamp(tx / t, chosen[k] - P * 0.3, chosen[k] + P * 0.3) : null;
+      });
+    }
     // refine each centre on its band signal (centroid of positive band columns)
-    return chosen.map(c => {
+    return chosen.map((c, k) => {
+      if (snapped && snapped[k] != null) return { x: snapped[k] };
       let s = 0, sx = 0, mx = 0;
       const r = Math.round(P * 0.45);
       for (let x = Math.round(c - r); x <= Math.round(c + r); x++) {
@@ -361,16 +566,48 @@
   function detectLanes(S, w, h, rows, lens, opt) {
     opt = opt || {};
     const cols = rows.map((r, i) => laneColumns(S, w, h, r, lens[i]));
-    const P = opt.pitch || lanePitch(cols, w);
+    let P = opt.pitch || lanePitch(cols, w);
+    // the comb imprints repeat at the true lane pitch: correct a harmonic (2× / 3× / 4×) pitch estimate
+    const Wn = rows[0] && rows[0].wellMap;
+    if (Wn && !opt.pitch) {
+      const prof = rows.map(r => {
+        const p = new Float64Array(w), hw = Math.max(2, Math.round(r.fwhm / 2));
+        for (let x = 0; x < w; x++) { const yw = wellY(r, x); let t = 0; for (let d = -hw; d <= hw; d++) { const y = Math.round(yw + d); if (y >= 0 && y < h) t += Wn[y * w + x]; } p[x] = t; }
+        const sm = gaussSmooth(p, Math.max(1, P / 20)), bg = movingAvg(sm, odd(P * 2));
+        return zscore(Float64Array.from(sm, (v, i) => v - bg[i]));
+      });
+      const ac = lag => { let t = 0; const L = Math.round(lag); for (const z of prof) for (let i = 0; i + L < w; i++) t += z[i] * z[i + L]; return t; };
+      const base = ac(P);
+      for (const k of [4, 3, 2]) {
+        const q = P / k;
+        if (q < Math.max(8, w / 120)) continue;
+        if (ac(q) > 0.5 * Math.max(base, 1e-9) && ac(q) > 0) { P = q; break; }
+      }
+      rows.forEach((r, i) => { r._imprint = prof[i]; });
+    }
     const placed = cols.map(c => placeLanes(c, w, P, opt.lanes));
-    if (!opt.lanes && rows.length > 1) {
+    if (Wn && !opt.lanes) {
+      // lanes run from the first to the last visible comb imprint (consensus across rows: same comb)
+      const ext = placed.map((pl, i) => {
+        const z = rows[i]._imprint; if (!z) return null;
+        const str = pl.centers.map(c => { let m = -Infinity; for (let x = Math.round(c - P * 0.3); x <= Math.round(c + P * 0.3); x++) if (x >= 0 && x < w && z[x] > m) m = z[x]; return m; });
+        const topHalf = str.slice().sort((a, b) => b - a).slice(0, Math.max(1, Math.ceil(str.length / 2)));
+        const thr = 0.3 * median(topHalf);
+        const ok = pl.centers.filter((c, k) => str[k] > thr);
+        return ok.length >= 2 ? [ok[0], ok[ok.length - 1]] : null;
+      }).filter(Boolean);
+      if (ext.length) {
+        const xa = median(ext.map(e => e[0])) - P / 2, xb = median(ext.map(e => e[1])) + P / 2;
+        placed.forEach(pl => { pl.chosen = pl.centers.filter(c => c > xa && c < xb); });
+      }
+    } else if (!opt.lanes && rows.length > 1) {
       // all rows share one comb: use the consensus lane extent (rescues empty lanes at row ends)
       const firsts = placed.filter(p => p.chosen.length).map(p => p.chosen[0]);
       const lasts = placed.filter(p => p.chosen.length).map(p => p.chosen[p.chosen.length - 1]);
       const xa = median(firsts) - P / 2, xb = median(lasts) + P / 2;
       placed.forEach(p => { p.chosen = p.centers.filter(c => c > xa && c < xb); });
     }
-    rows.forEach((r, i) => { r.lanes = refineLanes(placed[i].chosen, placed[i].nb, w, P); });
+    rows.forEach((r, i) => { r.lanes = refineLanes(placed[i].chosen, placed[i].nb, w, P, r, h); });
     return P;
   }
 
@@ -398,7 +635,7 @@
     const d0 = Math.round(row.fwhm * 0.9) + 2;
     const raw = laneProfile(S, w, h, row, lane.x, len, halfW);
     const p = raw.subarray(d0);
-    const bgW = odd(P * params.bgWindowFrac);
+    const bgW = odd(Math.max(P * params.bgWindowFrac, 2.5 * row.fwhm)); // wider than the thickest band
     const base = movingAvg(movingMax(movingMin(p, bgW), bgW), Math.max(3, Math.round(bgW / 2)));
     const corr = Float64Array.from(p, (x, i) => x - base[i]);
     const sm = gaussSmooth(corr, Math.max(0.8, P / 50));
@@ -406,7 +643,7 @@
     // A plain MAD is inflated in ladder lanes, where most of the lane is signal.
     const noise = Math.max(percentile(Array.from(sm, Math.abs), 30) / 0.385, 1e-5);
     const minDist = Math.max(3, Math.round(P / 14));
-    const edge = Math.max(6, Math.round(P / 7)); // ignore the lane end, where it runs into the next row's wells
+    const edge = Math.max(6, Math.round(P / 7), Math.round(row.fwhm)); // ignore the lane end, where it runs into the next row's wells
     const idx = findPeaks(sm, minDist, noise * params.detectSNR).filter(i => i < sm.length - edge);
     const peaks = idx.map(i => bandAt(img, row, lane, corr, sm, i, d0, halfW, noise));
     lane.profile = { raw, base: Float64Array.from({ length: raw.length }, (_, i) => (i < d0 ? NaN : base[i - d0])), corr, sm, d0, halfW, noise };
@@ -437,8 +674,9 @@
       const xc = x - row.slope * d;
       for (let xi = Math.round(xc - halfW); xi <= Math.round(xc + halfW); xi++) {
         if (xi < 0 || xi >= w) continue;
-        const val = v[y * w + xi];
-        n++; if (val <= satLow || val >= satHigh) s++;
+        n++;
+        if (img.satMask) { if (img.satMask[y * w + xi] >= 128) s++; }
+        else { const val = v[y * w + xi]; if (val <= satLow || val >= satHigh) s++; }
       }
     }
     return n ? s / n : 0;
@@ -473,9 +711,25 @@
    * peaks: [{d, h}] ; sizes: bp (any order) ; bright: bp of reference bands (optional)
    * returns { pairs: [{peak, size}], quality }
    */
+  /** bands closer than ~6% (e.g. NEB 517/500) run as one band on agarose: merge them for fitting */
+  function mergeDoublets(sizes, bright) {
+    const sorted = Array.from(new Set(sizes)).sort((a, b) => b - a), groups = [];
+    for (const x of sorted) {
+      const g = groups[groups.length - 1];
+      if (g && g[0] / x < 1.06) g.push(x); else groups.push([x]);
+    }
+    const br = new Set(bright || []);
+    return groups.map(g => ({
+      size: g.length > 1 ? Math.round(Math.pow(10, g.reduce((a, x) => a + Math.log10(x), 0) / g.length)) : g[0],
+      label: g.join('/'), members: g, bright: g.some(x => br.has(x))
+    }));
+  }
+
   function fitLadder(peaks, sizes, bright, manual, prior) {
-    const S = sizes.slice().sort((a, b) => b - a);
+    const M = mergeDoublets(sizes, bright);
+    const S = M.map(m => m.size);
     const L = S.map(s => Math.log10(s));
+    bright = M.filter(m => m.bright).map(m => m.size);
     const pk = peaks.slice().sort((a, b) => a.d - b.d);
     const tol = 0.035; // ~8% in size
     if (manual && Object.keys(manual).length >= 2) return fromManual(pk, manual);
@@ -516,13 +770,18 @@
       for (let j = j0; j <= j1; j++) if (!pairs.some(q => q.j === j)) { missing++; if (brightSet.has(S[j])) missingBright++; }
       const unexplained = P.filter(p => p.d > dmin && p.d < dmax && !pairs.some(q => q.peak === p) && p.h > 0.15 * maxH).length;
       let err = 0; for (const q of pairs) err += q.err;
-      let sc = pairs.length - 0.5 * missing - 0.7 * unexplained - (err / pairs.length) / tol;
+      let sc = pairs.length - 0.35 * missing - 0.7 * unexplained - (err / pairs.length) / tol;
       if (brightSet.size) {
         // reference bands must look brighter than ordinary bands
         const hb = pairs.filter(q => brightSet.has(S[q.j])).map(q => q.peak.h);
         const hn = pairs.filter(q => !brightSet.has(S[q.j])).map(q => q.peak.h);
-        const medN = hn.length ? median(hn) : 0;
-        hb.forEach(h => { sc += h > 1.2 * medN ? 0.8 : -0.4; });
+        const topH = Math.max(...pairs.map(q => q.peak.h));
+        hb.forEach(h => { sc += h >= 0.7 * topH ? 0.8 : -0.6; });
+        // any band as bright as the reference bands must be a reference band (strongest cue for the ladder register)
+        pairs.forEach(q => { if (q.peak.h >= 0.7 * topH && !brightSet.has(S[q.j])) sc -= 2.5; });
+        // a reference-bright band inside the fitted range must not be left unassigned
+        const allTop = Math.max(...P.map(p => p.h));
+        P.forEach(p => { if (p.h >= 0.7 * allTop && p.d > pairs[0].peak.d && p.d < pairs[pairs.length - 1].peak.d && !pairs.some(q => q.peak === p)) sc -= 2.5; });
         if (hb.length) { const top = Math.max(...hb); hn.forEach(h => { if (h > 1.15 * top) sc -= 0.5; }); }
         sc -= 0.6 * missingBright;
       }
@@ -543,7 +802,7 @@
       }
     }
     if (!best) return { pairs: [], quality: -Infinity };
-    return { pairs: best.map(q => ({ peak: q.peak, size: S[q.j] })), quality: bestScore };
+    return { pairs: best.map(q => ({ peak: q.peak, size: S[q.j], label: M[q.j].label })), quality: bestScore };
   }
   function fromManual(pk, manual) {
     const pairs = [];
@@ -575,7 +834,7 @@
     // enforce strictly decreasing log size
     const clean = [];
     for (const p of pts) if (!clean.length || (p[1] < clean[clean.length - 1][1] && p[0] > clean[clean.length - 1][0])) clean.push(p);
-    if (clean.length < 2) return null;
+    if (clean.length < 3) return null;
     const n = clean.length;
     const toLog = d => {
       let i = 0;
@@ -608,7 +867,7 @@
   }
 
   global.GelCore = {
-    clamp, median, mad, percentile, gaussSmooth, findPeaks,
+    clamp, median, mad, percentile, gaussSmooth, findPeaks, mergeDoublets,
     fromRGBA, fromTIFF, detectDarkBands, makeSignal,
     detectRows, detectLanes, rowLengths, wellY,
     analyzeLane, bandAtD, windowVolume, fitLadder, makeCalibration

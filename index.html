@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Gel Lane Analyzer</title>
 <meta name="description" content="Drag-and-drop agarose gel analysis: lane detection, ladder sizing, labels from Excel, band calls and densitometry. Runs entirely in your browser.">
-<link rel="stylesheet" href="css/style.css">
+<link rel="stylesheet" href="css/style.css?v=6">
 <script src="https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/utif@3.1.0/UTIF.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
@@ -46,7 +46,7 @@
       <div class="field">
         <label for="ladderPos">Ladder lanes</label>
         <select id="ladderPos">
-          <option value="auto">From labels, else first lane</option>
+          <option value="auto">Auto: from labels, else detect ladder-like lanes</option>
           <option value="first">First lane of each row</option>
           <option value="last">Last lane of each row</option>
           <option value="both">First and last lane</option>
@@ -115,10 +115,12 @@
     <section class="card">
       <h2><span class="step">5</span>Expected band</h2>
       <div class="grid2">
-        <div class="field"><label for="expected">Expected size (bp)</label><input id="expected" type="number" min="1" placeholder="e.g. 520"></div>
+        <div class="field"><label for="expected">Expected size(s), bp</label><input id="expected" type="text" placeholder="e.g. 550, 320"></div>
         <div class="field"><label for="tol">Tolerance ±%</label><input id="tol" type="number" min="1" max="50" value="10"></div>
+        <div class="field"><label for="dimerBp">Primer-dimer cutoff (bp)</label><input id="dimerBp" type="number" min="0" value="100" placeholder="off"></div>
       </div>
-      <p class="hint small">Per-row and per-lane expected sizes can be set in the tables below (or column B of the sheet).</p>
+      <p class="hint small">Bands smaller than the cutoff are reported as primer dimers and never counted as the product. Set 0 for very short amplicons.</p>
+      <p class="hint small">Several sizes (e.g. 550, 320) are each called separately. Per-row and per-lane sizes can be set in the tables below, or in column B of the sheet (e.g. "550; 320").</p>
       <details>
         <summary class="small">Detection settings</summary>
         <div class="grid2">
@@ -145,6 +147,19 @@
         <label class="toggle"><input type="checkbox" id="showBoxes" checked> Band calls</label>
         <label class="toggle"><input type="checkbox" id="showLanes"> Lane strips</label>
         <label class="toggle"><input type="checkbox" id="invertDisp"> Invert</label>
+        <details class="style-pop">
+          <summary class="btn">Label style ▾</summary>
+          <div class="pop">
+            <div class="field"><label for="stSize">Text size <span id="stSizeOut">100%</span></label><input id="stSize" type="range" min="40" max="300" step="10" value="100"></div>
+            <div class="color-row"><label for="stLane">Lane labels</label><input id="stLane" type="color" value="#111827"></div>
+            <div class="color-row"><label for="stLadder">Ladder sizes</label><input id="stLadder" type="color" value="#2563eb"></div>
+            <div class="color-row"><label for="stBand">Band size labels</label><input id="stBand" type="color" value="#111827"></div>
+            <label class="toggle"><input type="checkbox" id="stBold" checked> Bold</label>
+            <label class="toggle"><input type="checkbox" id="stOnBand"> Size next to every called band</label>
+            <button type="button" class="btn ghost" id="stReset">Reset style</button>
+            <p class="hint small">Double-click a lane label, a band or a row-end size on the gel to edit it.</p>
+          </div>
+        </details>
       </div>
       <div class="tb-group right">
         <button class="btn" id="exportPng" disabled>PNG</button>
@@ -232,8 +247,8 @@
 </dialog>
 
 <div id="toast" class="toast" hidden></div>
-<script src="js/ladders.js"></script>
-<script src="js/gelcore.js"></script>
-<script src="js/app.js"></script>
+<script src="js/ladders.js?v=6"></script>
+<script src="js/gelcore.js?v=6"></script>
+<script src="js/app.js?v=6"></script>
 </body>
 </html>
