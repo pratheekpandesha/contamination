@@ -1,4 +1,4 @@
-/* app.js — UI for Gel Lane Analyzer */
+/* app.js — UI for Contamination */
 (function () {
   'use strict';
   const G = window.GelCore;

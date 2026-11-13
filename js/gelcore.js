@@ -1,4 +1,4 @@
-/* gelcore.js — image-analysis core for Gel Lane Analyzer (no DOM access).
+/* gelcore.js — image-analysis core for Contamination (no DOM access).
  *
  * Conventions
  *   v[]  : intensity as stored in the image, normalised 0..1 (0 = black)
