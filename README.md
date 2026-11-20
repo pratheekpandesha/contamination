@@ -1,4 +1,4 @@
-# Contamination (beta)
+# Photo 51 (beta)
 
 > **Beta:** results are for research use only; check calls against your gel and report problems.
 
@@ -27,17 +27,17 @@ Open the GitHub Pages URL, then drag a gel image onto the page. TIFF (8/16-bit),
 
 ## Deploy on GitHub Pages (one time, about 2 minutes)
 
-1. Create a new repository on GitHub, e.g. `contamination` (public, or private on a plan that allows Pages).
+1. Create a new repository on GitHub, e.g. `photo51` (public, or private on a plan that allows Pages).
 2. Upload the contents of this folder (`index.html`, `css/`, `js/`, `lab-ladders.json`, `sample-labels.csv`, `README.md`). Either drag them into the GitHub web page ("Add file → Upload files"), or from a terminal:
    ```bash
-   cd contamination
-   git init && git add . && git commit -m "Contamination"
+   cd photo51
+   git init && git add . && git commit -m "Photo 51"
    git branch -M main
-   git remote add origin https://github.com/<your-username>/contamination.git
+   git remote add origin https://github.com/<your-username>/photo51.git
    git push -u origin main
    ```
 3. In the repository, go to **Settings → Pages → Build and deployment**. Set Source to *Deploy from a branch*, Branch to `main`, folder `/ (root)`, then click **Save**.
-4. After about a minute the page is live at `https://<your-username>.github.io/contamination/`.
+4. After about a minute the page is live at `https://<your-username>.github.io/photo51/`.
 
 The page loads three libraries from the jsDelivr CDN: UTIF.js (TIFF), pako (compressed TIFF) and SheetJS (Excel). It needs an internet connection the first time it's opened.
 

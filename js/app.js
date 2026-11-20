@@ -1,4 +1,4 @@
-/* app.js — UI for Contamination */
+/* app.js — UI for Photo 51 */
 (function () {
   'use strict';
   const G = window.GelCore;
